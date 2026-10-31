@@ -1,6 +1,7 @@
 {
   "name": "open-vault-prompt",
   "owner": { "name": "vahidkaargar" },
+  "description": "Open Vault integration for Claude Code: request secrets in a private dialog, never in chat.",
   "plugins": [
     {
       "name": "open-vault-prompt",
