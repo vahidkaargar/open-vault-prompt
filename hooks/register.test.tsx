@@ -14,6 +14,13 @@ const BAND = {
   },
 } as const
 
+const RUN_TEST = {
+  command: 'ovault-test',
+  args: '',
+  origin: { kind: 'composer' },
+  presentation: { isFullscreen: false, columns: 80 },
+} as const
+
 const ran = (exitCode: number, stdout: string, stderr = '') => ({
   value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false },
 })
@@ -82,4 +89,61 @@ test('a bad name is refused before any dialog opens', async ($, on) => {
     reason: 'x',
   })
   expect(called.deny).toContain('letters, digits')
+})
+
+test('/ovault-test stores, reads back, compares and deletes without involving the model', async ($, on) => {
+  const vault = new Map<string, string>()
+  const prompts: string[] = []
+  on('process.run', (_, e) => {
+    const a = e.argv.slice(4)
+    const args = a.join(' ')
+    if (args === 'project list') return ran(0, '')
+    if (args.startsWith('project create')) return ran(0, '✓ Project created\n')
+    if (args.startsWith('secret list')) return ran(0, 'No secrets.\n')
+    if (a[0] === 'secret' && a[1] === 'set') {
+      vault.set(a[2] ?? '', e.init?.stdin ?? '')
+      return ran(0, '✓ Encrypted and stored\n')
+    }
+    if (a[0] === 'secret' && a[1] === 'get') return ran(0, `${vault.get(a[2] ?? '') ?? ''}\n`)
+    if (a[0] === 'secret' && a[1] === 'delete') {
+      vault.delete(a[2] ?? '')
+      return ran(0, '✓ deleted\n')
+    }
+    return ran(1, '', 'unexpected')
+  })
+  on('tool.register', () => ({ value: { tool: 'mcp__open-vault-prompt__request_secret' } }))
+  on('command.register', () => ({ value: { command: 'ovault-test' } }))
+  on('prompt.submit', (_, e) => {
+    prompts.push(e.text)
+    return { text: e.text }
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const ran1 = await $.command.run(RUN_TEST)
+  expect(ran1.text).toContain('Self-test dialog opened')
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await ui.input({ key: 'secret', text: 'hello123', kind: 'change' })
+  await ui.input({ key: 'secret', text: '••••••••', kind: 'submit' })
+
+  expect(await ui.find({ type: 'Text', text: /PASS: stored 8 characters/ })).toBeTruthy()
+  expect(vault.has('OVP_SELFTEST')).toBe(false)
+  expect(prompts).toHaveLength(0)
+  await ui.unmount()
+})
+
+test('a missing ovault binary gives an install hint', async ($, on) => {
+  on('process.run', () => ran(127, '', 'sh: ovault: not found'))
+  on('tool.register', () => ({ value: { tool: 'mcp__open-vault-prompt__request_secret' } }))
+  on('command.register', () => ({ value: { command: 'ovault-test' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run(RUN_TEST)
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await ui.input({ key: 'secret', text: 'x', kind: 'change' })
+  await ui.input({ key: 'secret', text: '•', kind: 'submit' })
+  expect(await ui.find({ type: 'Text', text: /ovault not found/ })).toBeTruthy()
+  await ui.unmount()
 })

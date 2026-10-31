@@ -5,6 +5,9 @@ import type { VaultView } from '../types'
 
 const TOOL = 'request_secret'
 const FULL_TOOL = 'mcp__open-vault-prompt__request_secret'
+const TEST_COMMAND = 'ovault-test'
+const TEST_NAME = 'OVP_SELFTEST'
+const TEST_PROJECT = 'ovp-selftest'
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/
 const view = atom({ plugin: 'open-vault-prompt', key: 'view' } as const, null as VaultView | null)
 
@@ -22,6 +25,13 @@ function vault($: EngineInterface, args: string[], stdin?: string) {
   return $.process.run(['/bin/sh', '-c', RUN_OVAULT, 'ovault', ...args], { stdin, timeoutMs: 30_000 })
 }
 
+function failure(r: { exitCode: number; stdout: string; stderr: string }) {
+  if (r.exitCode === 127) return 'ovault not found. Install it (README step 2) or set OVAULT_BIN.'
+  if (/not logged in/i.test(r.stderr + r.stdout)) return 'ovault is not logged in. Run: ovault auth login'
+
+  return r.stderr || r.stdout || `ovault exited ${r.exitCode}`
+}
+
 function absorb(shown: string) {
   if (shown.length >= secret.length) secret += shown.slice(secret.length)
   else secret = secret.slice(0, shown.length)
@@ -33,23 +43,58 @@ async function finish($: EngineInterface, message: string) {
   await $.prompt.submit({ text: message })
 }
 
+async function open($: EngineInterface, init: Omit<VaultView, 'shown' | 'phase' | 'isOverwrite'>) {
+  secret = ''
+  await update($, view, () => ({ ...init, shown: '', phase: 'input' as const, isOverwrite: false }))
+
+  // Tell the human if this overwrites; the dialog redraws when it answers.
+  void vault($, ['secret', 'list', '--project', init.project]).then(async r => {
+    const isOverwrite = new RegExp(`^\\s+${init.name.replace(/[.]/g, '\\.')}\\s`, 'm').test(r.stdout)
+    await update($, view, v => (v && v.id === init.id ? { ...v, isOverwrite } : v))
+  })
+}
+
+async function store($: EngineInterface, v: VaultView, value: string) {
+  const have = await vault($, ['project', 'list'])
+  if (have.exitCode !== 0) throw new Error(failure(have))
+  const exists = new RegExp(`^\\s+${v.project.replace(/[.]/g, '\\.')}\\s`, 'm').test(have.stdout)
+  if (!exists) {
+    const made = await vault($, ['project', 'create', v.project])
+    if (made.exitCode !== 0) throw new Error(failure(made))
+  }
+  const stored = await vault($, ['secret', 'set', v.name, '--project', v.project, '--file', '/dev/stdin'], value)
+  if (stored.exitCode !== 0 || !stored.stdout.includes('Encrypted and stored'))
+    throw new Error(stored.exitCode !== 0 ? failure(stored) : 'no confirmation from ovault')
+}
+
+// Self-test: read the value back, compare it here, delete it. The model is not involved.
+async function verify($: EngineInterface, value: string) {
+  const got = await vault($, ['secret', 'get', TEST_NAME, '--project', TEST_PROJECT, '--raw'])
+  const same = got.exitCode === 0 && got.stdout.replace(/\r?\n$/, '') === value
+  const gone = await vault($, ['secret', 'delete', TEST_NAME, '--project', TEST_PROJECT])
+  const cleanup = gone.exitCode === 0 ? 'test secret deleted' : `could not delete ${TEST_NAME}: ${failure(gone)}`
+  if (got.exitCode !== 0) return { ok: false, text: `Stored, but reading it back failed: ${failure(got)} (${cleanup})` }
+
+  return same
+    ? { ok: true, text: `PASS: stored ${value.length} characters, decrypted them back identical, ${cleanup}.` }
+    : { ok: false, text: `FAIL: the value read back differs from what you typed (${cleanup}).` }
+}
+
 async function save($: EngineInterface) {
   const v = await read($, view)
   const value = secret.replace(/[\r\n]+$/, '')
-  if (!v || v.phase === 'saving' || value === '') return
+  if (!v || v.phase !== 'input' || value === '') return
   await update($, view, cur => (cur ? { ...cur, phase: 'saving' as const, error: undefined } : cur))
 
   try {
-    const have = await vault($, ['project', 'list'])
-    if (have.exitCode !== 0) throw new Error(have.stderr || have.stdout)
-    const exists = new RegExp(`^\\s+${v.project.replace(/[.]/g, '\\.')}\\s`, 'm').test(have.stdout)
-    if (!exists) {
-      const made = await vault($, ['project', 'create', v.project])
-      if (made.exitCode !== 0) throw new Error(made.stderr || made.stdout)
+    await store($, v, value)
+    if (v.isSelfTest) {
+      const result = await verify($, value)
+      secret = ''
+      await update($, view, cur => (cur ? { ...cur, phase: 'done' as const, shown: '', result } : cur))
+
+      return
     }
-    const stored = await vault($, ['secret', 'set', v.name, '--project', v.project, '--file', '/dev/stdin'], value)
-    if (stored.exitCode !== 0 || !stored.stdout.includes('Encrypted and stored'))
-      throw new Error(stored.stderr || stored.stdout || 'no confirmation from ovault')
     await finish(
       $,
       `Secret "${v.name}" is now stored in Open Vault, project "${v.project}"${v.isOverwrite ? ' (replaced the previous version)' : ''}. ` +
@@ -64,6 +109,12 @@ async function save($: EngineInterface) {
 async function cancel($: EngineInterface) {
   const v = await read($, view)
   if (!v) return
+  if (v.isSelfTest) {
+    secret = ''
+    await update($, view, () => null)
+
+    return
+  }
   await finish($, `The human cancelled the request for secret "${v.name}" (project "${v.project}"). Nothing was stored. Do not ask again unless they ask.`)
 }
 
@@ -89,8 +140,25 @@ export const register: Register = on => {
       },
       isDeferred: false,
     })
+    await $.command.register({
+      name: TEST_COMMAND,
+      description: 'Open Vault self-test: type a dummy value; it is stored, read back, compared and deleted',
+    })
 
     return next(e)
+  })
+
+  on('command.run', { command: TEST_COMMAND }, async $ => {
+    if ((await read($, view)) !== null) return { text: 'A secret dialog is already open above the prompt. Finish or cancel it first.' }
+    await open($, {
+      id: `selftest-${Date.now()}`,
+      name: TEST_NAME,
+      project: TEST_PROJECT,
+      reason: 'Self-test: type any dummy text (not a real secret) and press Enter.',
+      isSelfTest: true,
+    })
+
+    return { text: 'Self-test dialog opened above the prompt. Type any dummy text and press Enter.' }
   })
 
   on('tool.call', { tool: FULL_TOOL }, async ($, e) => {
@@ -106,23 +174,8 @@ export const register: Register = on => {
     if ((await read($, view)) !== null)
       return { deny: 'Another secret request is already waiting on the human. Wait for its result message.' }
 
-    secret = ''
-    await update($, view, () => ({
-      id: e.tool_use_id,
-      name,
-      project,
-      reason,
-      shown: '',
-      phase: 'input' as const,
-      isOverwrite: false,
-    }))
+    await open($, { id: e.tool_use_id, name, project, reason })
     void $.ui.notify(`Claude asks you to store the secret ${name} (project ${project})`, { title: 'Open Vault' })
-
-    // Tell the human if this overwrites; the dialog redraws when it answers.
-    void vault($, ['secret', 'list', '--project', project]).then(async r => {
-      const isOverwrite = new RegExp(`^\\s+${name.replace(/[.]/g, '\\.')}\\s`, 'm').test(r.stdout)
-      await update($, view, v => (v && v.id === e.tool_use_id ? { ...v, isOverwrite } : v))
-    })
 
     return text(
       `A private dialog is open in the human's Claude Code window asking for ${name} (project ${project}). ` +
@@ -135,8 +188,23 @@ export const register: Register = on => {
     if (!v || e.props.hasSurvey || e.surface === 'mobile') return next(e)
     const { Box, Text, Input, Button } = $.ui.resolve(e)
 
+    if (v.phase === 'done' && v.result)
+      return (
+        <Box marginX={2} marginY={1}>
+          <Box flexGrow={1}>
+            <Text bold color={v.result.ok ? 'green' : 'red'}>
+              Open Vault self-test: {v.result.text}
+            </Text>
+          </Box>
+          <Button key="close" plain onPress={() => void update($, view, () => null)}>
+            {' '}✕
+          </Button>
+        </Box>
+      )
+
     return (
       <Box flexDirection="column" marginX={2} marginY={1}>
+        {v.isSelfTest && <Text dimColor>{v.reason}</Text>}
         <Box>
           <Text bold color="cyan">
             {v.name}

@@ -71,4 +71,8 @@ is still in this conversation's history and is worth rotating if it matters.
 - `request_secret` is missing from the tool list: the `open-vault-prompt`
   plugin is not loaded. Tell the user; do not fall back to asking for the
   secret in chat.
+- To check the whole setup, tell the user to type `/ovault-test`: it stores a
+  dummy value, reads it back, compares and deletes it, without involving you.
+- Setup steps for Open Vault and this plugin are in the plugin's README:
+  https://github.com/vahidkaargar/open-vault-prompt#setup-step-by-step
 - Never read, copy or print the vault's key file.

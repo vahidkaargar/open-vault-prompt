@@ -1,6 +1,6 @@
 {
   "name": "open-vault-prompt",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A prompt dialog where Claude asks you to enter a new secret, which goes straight into Open Vault and never into the chat.",
   "author": { "name": "vahidkaargar" },
   "homepage": "https://github.com/vahidkaargar/open-vault-prompt",

@@ -5,8 +5,12 @@ export type VaultView = {
   reason: string
   /** Bullets standing for the typed value; the value itself is never in state. */
   shown: string
-  phase: 'input' | 'saving'
+  phase: 'input' | 'saving' | 'done'
   isOverwrite: boolean
+  /** Opened by /ovault-test: the result goes to the human, not the model. */
+  isSelfTest?: boolean
+  /** The self-test's outcome, shown until the human closes it. */
+  result?: { ok: boolean; text: string }
   error?: string
 }
 
