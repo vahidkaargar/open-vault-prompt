@@ -1,0 +1,11 @@
+{
+  "name": "open-vault-prompt",
+  "version": "0.2.0",
+  "description": "A prompt dialog where Claude asks you to enter a new secret, which goes straight into Open Vault and never into the chat.",
+  "author": { "name": "vahidkaargar" },
+  "homepage": "https://github.com/vahidkaargar/open-vault-prompt",
+  "repository": "https://github.com/vahidkaargar/open-vault-prompt",
+  "license": "MIT",
+  "keywords": ["secrets", "passwords", "open-vault", "security"],
+  "types": "./types/index.d.ts"
+}

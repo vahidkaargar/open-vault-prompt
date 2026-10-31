@@ -1,0 +1,11 @@
+{
+  "name": "open-vault-prompt",
+  "owner": { "name": "vahidkaargar" },
+  "plugins": [
+    {
+      "name": "open-vault-prompt",
+      "source": "./",
+      "description": "Private dialog for Claude to request a new secret that goes straight into Open Vault, plus a skill that keeps secrets out of chat."
+    }
+  ]
+}
